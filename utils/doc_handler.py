@@ -1,3 +1,5 @@
+# In utils/doc_handler.py - Update the vector store creation logic:
+
 import streamlit as st
 from langchain_community.document_loaders import PyPDFLoader, Docx2txtLoader, TextLoader
 from langchain.text_splitter import CharacterTextSplitter
@@ -8,8 +10,10 @@ from langchain.retrievers import EnsembleRetriever
 from utils.build_graph import build_knowledge_graph
 from rank_bm25 import BM25Okapi
 from sentence_transformers import SentenceTransformer
+import torch
 import os
 import re
+import numpy as np
 
 def process_documents(uploaded_files, reranker, embedding_model, base_url):
     if st.session_state.documents_loaded:
@@ -67,27 +71,24 @@ def process_documents(uploaded_files, reranker, embedding_model, base_url):
         except Exception as e:
             st.warning(f"Falling back to all-MiniLM embeddings: {str(e)}")
             device = "cuda" if torch.cuda.is_available() else "cpu"
-            model = SentenceTransformer("all-MiniLM-L6-v2").to(device)
-            embeddings = model
-
-        # Vector store - process in smaller batches
-        batch_size = 10
-        for i in range(0, len(texts), batch_size):
-            batch = texts[i:i + batch_size]
-            if isinstance(embeddings, SentenceTransformer):
-                batch_embeddings = embeddings.encode([doc.page_content for doc in batch]).tolist()
-                vector_store = FAISS.from_embeddings(
-                    embeddings=batch_embeddings,
-                    texts=[doc.page_content for doc in batch],
-                    embedding=embeddings
-                )
-            else:
-                vector_store = FAISS.from_documents(batch, embeddings)
+            embeddings_model = SentenceTransformer("all-MiniLM-L6-v2").to(device)
             
-            if i == 0:
-                complete_vector_store = vector_store
-            else:
-                complete_vector_store.merge_from(vector_store)
+            # Create embeddings for all texts
+            text_embeddings = embeddings_model.encode(text_contents)
+            
+            # Create metadatas for all texts
+            metadatas = [{"content": text} for text in text_contents]
+            
+            # Initialize FAISS index
+            vector_store = FAISS.from_embeddings(
+                text_embeddings=text_embeddings.tolist(),  # Convert numpy array to list
+                texts=text_contents,
+                metadatas=metadatas,
+                embedding=embeddings_model
+            )
+        else:
+            # If Ollama embeddings worked, use them directly
+            vector_store = FAISS.from_documents(texts, embeddings)
 
         # BM25 store
         bm25_retriever = BM25Retriever.from_texts(
@@ -100,7 +101,7 @@ def process_documents(uploaded_files, reranker, embedding_model, base_url):
         ensemble_retriever = EnsembleRetriever(
             retrievers=[
                 bm25_retriever,
-                complete_vector_store.as_retriever(search_kwargs={"k": 5})
+                vector_store.as_retriever(search_kwargs={"k": 5})
             ],
             weights=[0.4, 0.6]
         )

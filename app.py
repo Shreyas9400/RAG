@@ -62,8 +62,11 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
                                                                                     # Manage Session state
+# At the top of app.py after other session state initializations:
 if "messages" not in st.session_state:
     st.session_state.messages = []
+if "chat_history" not in st.session_state:  # Add this
+    st.session_state.chat_history = []
 if "retrieval_pipeline" not in st.session_state:
     st.session_state.retrieval_pipeline = None
 if "rag_enabled" not in st.session_state:
@@ -117,7 +120,17 @@ for message in st.session_state.messages:
 
 # In the main chat generation section, replace the Ollama-specific code with:
 # Replace OLLAMA_API_URL references with this check:
+# Replace the chat generation section with this updated version:
 if prompt := st.chat_input("Ask about your documents..."):
+    # Add message to chat history
+    st.session_state.messages.append({"role": "user", "content": prompt})
+    
+    # Update chat history string
+    chat_history = "\n".join([
+        f"{msg['role']}: {msg['content']}" 
+        for msg in st.session_state.messages[-5:]  # Keep last 5 messages for context
+    ])
+
     # Instantiate ModelProvider
     model_provider_instance = ModelProvider(
         provider=model_provider.lower(), 
@@ -146,7 +159,7 @@ if prompt := st.chat_input("Ask about your documents..."):
             except Exception as e:
                 st.error(f"Retrieval error: {str(e)}")
         
-        # 🚀 Structured Prompt
+        # Structured Prompt
         system_prompt = f"""Use the chat history to maintain context:
             Chat History:
             {chat_history}
@@ -163,32 +176,41 @@ if prompt := st.chat_input("Ask about your documents..."):
             Question: {prompt}
             Answer:"""
         
-        # Stream response
-        response = requests.post(
-            OLLAMA_API_URL,
-            json={
-                "model": MODEL,
-                "prompt": system_prompt,
-                "stream": True,
-                "options": {
-                    "temperature": st.session_state.temperature,  # Use dynamic user-selected value
-                    "num_ctx": 4096
-                }
-            },
-            stream=True
-        )
         try:
-            for line in response.iter_lines():
-                if line:
-                    data = json.loads(line.decode())
-                    token = data.get("response", "")
-                    full_response += token
-                    response_placeholder.markdown(full_response + "▌")
-                    
-                    # Stop if we detect the end token
-                    if data.get("done", False):
-                        break
+            # Generate response using the model provider
+            if model_provider.lower() == "ollama":
+                response = requests.post(
+                    f"{OLLAMA_BASE_URL}/api/generate",
+                    json={
+                        "model": MODEL,
+                        "prompt": system_prompt,
+                        "stream": True,
+                        "options": {
+                            "temperature": st.session_state.temperature,
+                            "num_ctx": 4096
+                        }
+                    },
+                    stream=True
+                )
+                
+                for line in response.iter_lines():
+                    if line:
+                        data = json.loads(line.decode())
+                        token = data.get("response", "")
+                        full_response += token
+                        response_placeholder.markdown(full_response + "▌")
                         
+                        if data.get("done", False):
+                            break
+            else:
+                # Handle other providers using the ModelProvider class
+                response = model_provider_instance.generate_response(
+                    system_prompt,
+                    temperature=st.session_state.temperature,
+                    stream=True
+                )
+                full_response = response  # Adjust based on provider's response format
+                
             response_placeholder.markdown(full_response)
             st.session_state.messages.append({"role": "assistant", "content": full_response})
             
