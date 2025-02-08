@@ -1,31 +1,53 @@
 import streamlit as st
-import requests
 import json
 from utils.retriever_pipeline import retrieve_documents
 from utils.doc_handler import process_documents
+from utils.model_utils import ModelProvider
 from sentence_transformers import CrossEncoder
 import torch
 import os
-from dotenv import load_dotenv, find_dotenv
 
-load_dotenv(find_dotenv())  # Loads .env file contents into the application based on key-value pairs defined therein, making them accessible via 'os' module functions like os.getenv().
-
-OLLAMA_BASE_URL = os.getenv("OLLAMA_API_URL", "http://localhost:11434")
-OLLAMA_API_URL = f"{OLLAMA_BASE_URL}/api/generate"
-MODEL= os.getenv("MODEL", "deepseek-r1:7b")                                                      #Make sure you have it installed in ollama
-EMBEDDINGS_MODEL = "nomic-embed-text:latest"
-CROSS_ENCODER_MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"
-
+# Define device before using it
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
-reranker = None                                                        # 🚀 Initialize Cross-Encoder (Reranker) at the global level 
+# Initialize Cross-Encoder (Reranker)
+reranker = None
 try:
-    reranker = CrossEncoder(CROSS_ENCODER_MODEL, device=device)
+    # With this:
+    reranker = CrossEncoder('sentence-transformers/all-MiniLM-L6-v2', device=device)
 except Exception as e:
     st.error(f"Failed to load CrossEncoder model: {str(e)}")
 
+# Add provider configuration to sidebar
+with st.sidebar:
+    st.header("🤖 Model Provider")
+    model_provider = st.selectbox(
+        "Select Model Provider", 
+        ["Ollama", "Gemini", "Groq", "OpenAI"]
+    )
 
-st.set_page_config(page_title="DeepGraph RAG-Pro", layout="wide")      # ✅ Streamlit configuration
+    # Model selection based on provider
+    if model_provider == "Ollama":
+        MODEL = st.selectbox("Ollama Model", ["deepseek-r1:7b", "llama2", "mistral"])
+        EMBEDDINGS_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
+        OLLAMA_BASE_URL = "http://localhost:11434"  # Changed from base_url to OLLAMA_BASE_URL
+        api_key = None
+    elif model_provider == "Gemini":
+        MODEL = st.selectbox("Gemini Model", ["gemini-2.0-flash"])
+        EMBEDDINGS_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
+        api_key = st.text_input("Google API Key", type="password")
+        OLLAMA_BASE_URL = None
+    elif model_provider == "Groq":
+        MODEL = st.selectbox("Groq Model", ["llama2-70b-4096", "mixtral-8x7b-32768"])
+        EMBEDDINGS_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
+        api_key = st.text_input("Groq API Key", type="password")
+        OLLAMA_BASE_URL = None
+    elif model_provider == "OpenAI":
+        MODEL = st.selectbox("OpenAI Model", ["gpt-3.5-turbo", "gpt-4"])
+        EMBEDDINGS_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
+        api_key = st.text_input("OpenAI API Key", type="password")
+        OLLAMA_BASE_URL = None
+
 
 # Custom CSS
 st.markdown("""
@@ -38,7 +60,6 @@ st.markdown("""
         .stButton>button { background-color: #00AAFF; color: white; }
     </style>
 """, unsafe_allow_html=True)
-
 
                                                                                     # Manage Session state
 if "messages" not in st.session_state:
@@ -94,22 +115,30 @@ for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
 
+# In the main chat generation section, replace the Ollama-specific code with:
+# Replace OLLAMA_API_URL references with this check:
 if prompt := st.chat_input("Ask about your documents..."):
-    chat_history = "\n".join([msg["content"] for msg in st.session_state.messages[-5:]])  # Last 5 messages
-    st.session_state.messages.append({"role": "user", "content": prompt})
-    with st.chat_message("user"):
-        st.markdown(prompt)
-    
+    # Instantiate ModelProvider
+    model_provider_instance = ModelProvider(
+        provider=model_provider.lower(), 
+        model=MODEL, 
+        api_key=api_key
+    )    
+
     # Generate response
     with st.chat_message("assistant"):
         response_placeholder = st.empty()
         full_response = ""
         
-        # 🚀 Build context
+        # Build context
         context = ""
         if st.session_state.rag_enabled and st.session_state.retrieval_pipeline:
             try:
-                docs = retrieve_documents(prompt, OLLAMA_API_URL, MODEL, chat_history)
+                # For non-Ollama providers, use a different URL or method
+                if model_provider.lower() == "ollama":
+                    docs = retrieve_documents(prompt, f"{OLLAMA_BASE_URL}/api/generate", MODEL, chat_history)
+                else:
+                    docs = retrieve_documents(prompt, None, MODEL, chat_history)
                 context = "\n".join(
                     f"[Source {i+1}]: {doc.page_content}" 
                     for i, doc in enumerate(docs)
